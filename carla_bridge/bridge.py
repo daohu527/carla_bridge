@@ -16,6 +16,8 @@
 
 from threading import Thread, Lock, Event
 
+import os
+
 try:
   import queue
 except ImportError:
@@ -23,6 +25,7 @@ except ImportError:
 
 import carla
 import cyber_time
+import cyber
 
 class CarlaCyberBridge():
   with open(os.path.join(os.path.dirname(__file__), "CARLA_VERSION")) as f:
@@ -94,22 +97,213 @@ class CarlaCyberBridge():
                             self.on_weather_changed)
 
 
-    def on_weather_changed(self, weather_parameters):
-      """
-      Callback on new weather parameters
-      :return:
-      """
-      if not self.carla_world:
-          return
-      self.loginfo("Applying weather parameters...")
-      weather = carla.WeatherParameters()
-      weather.cloudiness = weather_parameters.cloudiness
-      weather.precipitation = weather_parameters.precipitation
-      weather.precipitation_deposits = weather_parameters.precipitation_deposits
-      weather.wind_intensity = weather_parameters.wind_intensity
-      weather.fog_density = weather_parameters.fog_density
-      weather.fog_distance = weather_parameters.fog_distance
-      weather.wetness = weather_parameters.wetness
-      weather.sun_azimuth_angle = weather_parameters.sun_azimuth_angle
-      weather.sun_altitude_angle = weather_parameters.sun_altitude_angle
-      self.carla_world.set_weather(weather)
+  def on_weather_changed(self, weather_parameters):
+    """
+    Callback on new weather parameters
+    :return:
+    """
+    if not self.carla_world:
+        return
+    self.loginfo("Applying weather parameters...")
+    weather = carla.WeatherParameters()
+    weather.cloudiness = weather_parameters.cloudiness
+    weather.precipitation = weather_parameters.precipitation
+    weather.precipitation_deposits = weather_parameters.precipitation_deposits
+    weather.wind_intensity = weather_parameters.wind_intensity
+    weather.fog_density = weather_parameters.fog_density
+    weather.fog_distance = weather_parameters.fog_distance
+    weather.wetness = weather_parameters.wetness
+    weather.sun_azimuth_angle = weather_parameters.sun_azimuth_angle
+    weather.sun_altitude_angle = weather_parameters.sun_altitude_angle
+    self.carla_world.set_weather(weather)
+
+  def process_run_state(self):
+    command = None
+    while not self.carla_control_queue.empty():
+      command = self.carla_control_queue.get()
+
+    while command is not None and cyber.ok():
+      self.carla_run_state = command
+      if self.carla_run_state == CarlaControl.PAUSE:
+        self.loginfo("State set to PAUSED")
+        self.status_publisher.set_synchronous_mode_running(False)
+        command = self.carla_control_queue.get()
+      elif self.carla_run_state == CarlaControl.PLAY:
+        self.loginfo("State set to PLAY")
+        self.status_publisher.set_synchronous_mode_running(True)
+        return
+      elif self.carla_run_state == CarlaControl.STEP_ONCE:
+        self.loginfo("Execute single step.")
+        self.status_publisher.set_synchronous_mode_running(True)
+        self.carla_control_queue.put(CarlaControl.PAUSE)
+        return
+
+  def _synchronous_mode_update(self):
+    while not self.shutdown.is_set() and cyber.ok():
+      self.process_run_state()
+      if self.parameters['synchronous_mode_wait_for_vehicle_control_command']:
+        self._expected_ego_vehicle_control_command_ids = []
+        with self._expected_ego_vehicle_control_command_ids_lock:
+          for actor_id, actor in self.actor_factory.actors.items():
+            if isinstance(actor, EgoVehicle):
+              self._expected_ego_vehicle_control_command_ids.append(actor_id)
+      self.actor_factory.update_available_objects()
+      frame = self.carla_world.tick()
+
+      world_snapshot = self.carla_world.get_snapshot()
+
+      self.status_publisher.set_frame(frame)
+      self.update_clock(world_snapshot.timestamp)
+      self.logdebug("Tick for frame {} returned. Waiting for sensor data...".format(
+                frame))
+      self._update(frame, world_snapshot.timestamp.elapsed_seconds)
+      self.logdebug("Waiting for sensor data finished.")
+
+      if self.parameters['synchronous_mode_wait_for_vehicle_control_command']:
+        if self._expected_ego_vehicle_control_command_ids:
+          if not self._all_vehicle_control_commands_received.wait(CarlaRosBridge.VEHICLE_CONTROL_TIMEOUT):
+            self.logwarn("Timeout ({}s) while waiting for vehicle control commands. "
+                                     "Missing command from actor ids {}".format(CarlaRosBridge.VEHICLE_CONTROL_TIMEOUT,
+                                                                                self._expected_ego_vehicle_control_command_ids))
+          self._all_vehicle_control_commands_received.clear()
+
+  def _carla_time_tick(self, carla_snapshot):
+    if not self.shutdown.is_set():
+      if self.timestamp_last_run < carla_snapshot.timestamp.elapsed_seconds:
+        self.timestamp_last_run = carla_snapshot.timestamp.elapsed_seconds
+        self.update_clock(carla_snapshot.timestamp)
+        self.status_publisher.set_frame(carla_snapshot.frame)
+        self._update(carla_snapshot.frame,
+                      carla_snapshot.timestamp.elapsed_seconds)
+
+  def _update(self, frame_id, timestamp):
+    self.world_info.update(frame_id, timestamp)
+    self.actor_factory.update_actor_states(frame_id, timestamp)
+
+  def _ego_vehicle_control_applied_callback(self, ego_vehicle_id):
+    if not self.sync_mode or \
+        not self.parameters['synchronous_mode_wait_for_vehicle_control_command']:
+      return
+    with self._expected_ego_vehicle_control_command_ids_lock:
+      if ego_vehicle_id in self._expected_ego_vehicle_control_command_ids:
+        self._expected_ego_vehicle_control_command_ids.remove(
+                    ego_vehicle_id)
+      else:
+        self.logwarn(
+                    "Unexpected vehicle control command received from {}".format(ego_vehicle_id))
+      if not self._expected_ego_vehicle_control_command_ids:
+        self._all_vehicle_control_commands_received.set()
+
+  def update_clock(self, carla_timestamp):
+    if cyber.ok():
+      self.ros_timestamp = cyber.ros_timestamp(carla_timestamp.elapsed_seconds, from_sec=True)
+      self.clock_publisher.publish(Clock(clock=self.ros_timestamp))
+
+  def destroy(self):
+    self.loginfo("Shutting down...")
+    self.shutdown.set()
+    if not self.sync_mode:
+      if self.on_tick_id:
+        self.carla_world.remove_on_tick(self.on_tick_id)
+      self.actor_factory.thread.join()
+    else:
+      self.synchronous_mode_update_thread.join()
+    self.loginfo("Object update finished.")
+    self.debug_helper.destroy()
+    self.status_publisher.destroy()
+    self.destroy_service(self.spawn_object_service)
+    self.destroy_service(self.destroy_object_service)
+    self.destroy_subscription(self.carla_weather_subscriber)
+    self.carla_control_queue.put(CarlaControl.STEP_ONCE)
+
+    for uid in self._registered_actors:
+      self.actor_factory.destroy_actor(uid)
+    self.actor_factory.update_available_objects()
+    self.actor_factory.clear()
+    super(CarlaCyberBridge, self).destroy()
+
+
+def main(args=None):
+  cyber.init("bridge", args=args)
+
+  carla_bridge = None
+  carla_world = None
+  carla_client = None
+  executor = None
+  parameters = {}
+
+  executor = cyber.executors.MultiThreadedExecutor()
+  carla_bridge = CarlaCyberBridge()
+  executor.add_node(carla_bridge)
+
+  cyber.on_shutdown(carla_bridge.destroy)
+
+  parameters['host'] = carla_bridge.get_param('host', 'localhost')
+  parameters['port'] = carla_bridge.get_param('port', 2000)
+  parameters['timeout'] = carla_bridge.get_param('timeout', 2)
+  parameters['passive'] = carla_bridge.get_param('passive', False)
+  parameters['synchronous_mode'] = carla_bridge.get_param('synchronous_mode', True)
+  parameters['synchronous_mode_wait_for_vehicle_control_command'] = carla_bridge.get_param(
+      'synchronous_mode_wait_for_vehicle_control_command', False)
+  parameters['fixed_delta_seconds'] = carla_bridge.get_param('fixed_delta_seconds',
+                                                              0.05)
+  parameters['register_all_sensors'] = carla_bridge.get_param('register_all_sensors', True)
+  parameters['town'] = carla_bridge.get_param('town', 'Town01')
+  role_name = carla_bridge.get_param('ego_vehicle_role_name',
+                                      ["hero", "ego_vehicle", "hero1", "hero2", "hero3"])
+  parameters["ego_vehicle"] = {"role_name": role_name}
+
+  carla_bridge.loginfo("Trying to connect to {host}:{port}".format(
+      host=parameters['host'], port=parameters['port']))
+
+  try:
+    carla_client = carla.Client(
+        host=parameters['host'],
+        port=parameters['port'])
+    carla_client.set_timeout(parameters['timeout'])
+
+    # check carla version
+    dist = pkg_resources.get_distribution("carla")
+    if LooseVersion(dist.version) != LooseVersion(CarlaRosBridge.CARLA_VERSION):
+      carla_bridge.logfatal("CARLA python module version {} required. Found: {}".format(
+            CarlaRosBridge.CARLA_VERSION, dist.version))
+      sys.exit(1)
+
+    if LooseVersion(carla_client.get_server_version()) != \
+      LooseVersion(carla_client.get_client_version()):
+      carla_bridge.logwarn(
+            "Version mismatch detected: You are trying to connect to a simulator that might be incompatible with this API. Client API version: {}. Simulator API version: {}"
+            .format(carla_client.get_client_version(),
+                    carla_client.get_server_version()))
+
+    carla_world = carla_client.get_world()
+
+    if "town" in parameters and not parameters['passive']:
+      if parameters["town"].endswith(".xodr"):
+        carla_bridge.loginfo(
+              "Loading opendrive world from file '{}'".format(parameters["town"]))
+        with open(parameters["town"]) as od_file:
+          data = od_file.read()
+        carla_world = carla_client.generate_opendrive_world(str(data))
+      else:
+        if carla_world.get_map().name != parameters["town"]:
+          carla_bridge.loginfo("Loading town '{}' (previous: '{}').".format(
+                parameters["town"], carla_world.get_map().name))
+          carla_world = carla_client.load_world(parameters["town"])
+      carla_world.tick()
+
+    carla_bridge.initialize_bridge(carla_client.get_world(), parameters)
+
+    carla_bridge.spin()
+
+  except (IOError, RuntimeError) as e:
+    carla_bridge.logerr("Error: {}".format(e))
+  except KeyboardInterrupt:
+    pass
+  finally:
+    cyber.shutdown()
+    del carla_world
+    del carla_client
+
+if __name__ == "__main__":
+  main()
