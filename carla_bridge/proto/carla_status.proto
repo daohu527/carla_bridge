@@ -1,0 +1,9 @@
+package carla.msg
+
+# todo
+message CarlaStatus {
+  optional frame = 1;
+  optional synchronous_mode = 2;
+  optional synchronous_mode_running = 3;
+  optional fixed_delta_seconds = 4;
+}

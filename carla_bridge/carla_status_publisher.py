@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# todo(zero): add carla_msg
 from carla_msgs.msg import CarlaStatus
 
 class CarlaStatusPublisher(object):

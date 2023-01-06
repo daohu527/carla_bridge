@@ -16,6 +16,9 @@
 
 import numpy as np
 
+from modules.common.proto.header_pb2 import Header
+
+
 class PseudoActor(object):
   def __init__(self, uid, name, parent, node):
     self.uid = uid
@@ -45,7 +48,7 @@ class PseudoActor(object):
 
     if not timestamp:
       timestamp = self.node.get_time()
-    header.stamp = roscomp.ros_timestamp(sec=timestamp, from_sec=True)
+    header.timestamp_sec = timestamp
     return header
 
   def get_prefix(self):

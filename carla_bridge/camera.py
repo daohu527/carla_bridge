@@ -14,8 +14,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import numpy
+import numpy as np
 
+import carla
+
+from carla_bridge.sensor import Sensor
+
+from modules.drivers.proto.sensor_image_pb2 import Image
 
 class Camera(Sensor):
   cv_bridge = CvBridge()
@@ -49,7 +54,7 @@ class Camera(Sensor):
     # todo(zero): add camerainfo
 
   def sensor_data_updated(self, carla_camera_data):
-    img_msg = self.get_ros_image(carla_camera_data)
+    img_msg = self.get_image(carla_camera_data)
     cam_info = self._camera_info
     cam_info.header = img_msg.header
     self.camera_info_publisher.write(cam_info)
@@ -60,7 +65,7 @@ class Camera(Sensor):
     rotation = tf_msg.transform.rotation
     quat = [rotation.w, rotation.x, rotation.y, rotation.z]
     quat_swap = transforms3d.quaternions.mat2quat(
-        numpy.matrix([[0, 0, 1],
+        np.matrix([[0, 0, 1],
                       [-1, 0, 0],
                       [0, -1, 0]]))
     quat = transforms3d.quaternions.qmult(quat, quat_swap)
@@ -93,9 +98,9 @@ class RgbCamera(Camera):
                                     synchronous_mode=synchronous_mode)
 
   def get_carla_image_data_array(self, carla_image):
-    carla_image_data_array = numpy.ndarray(
+    carla_image_data_array = np.ndarray(
       shape=(carla_image.height, carla_image.width, 4),
-      dtype=numpy.uint8, buffer=carla_image.raw_data)
+      dtype=np.uint8, buffer=carla_image.raw_data)
     return carla_image_data_array, 'bgra8'
 
 
@@ -110,12 +115,12 @@ class DepthCamera(Camera):
                                       synchronous_mode=synchronous_mode)
 
   def get_carla_image_data_array(self, carla_image):
-    bgra_image = numpy.ndarray(
+    bgra_image = np.ndarray(
             shape=(carla_image.height, carla_image.width, 4),
-            dtype=numpy.uint8, buffer=carla_image.raw_data)
+            dtype=np.uint8, buffer=carla_image.raw_data)
 
-    scales = numpy.array([65536.0, 256.0, 1.0, 0]) / (256**3 - 1) * 1000
-    depth_image = numpy.dot(bgra_image, scales).astype(numpy.float32)
+    scales = np.array([65536.0, 256.0, 1.0, 0]) / (256**3 - 1) * 1000
+    depth_image = np.dot(bgra_image, scales).astype(np.float32)
 
     return depth_image, 'passthrough'
 
@@ -132,9 +137,9 @@ class SemanticSegmentationCamera(Camera):
 
   def get_carla_image_data_array(self, carla_image):
     carla_image.convert(carla.ColorConverter.CityScapesPalette)
-    carla_image_data_array = numpy.ndarray(
+    carla_image_data_array = np.ndarray(
             shape=(carla_image.height, carla_image.width, 4),
-            dtype=numpy.uint8, buffer=carla_image.raw_data)
+            dtype=np.uint8, buffer=carla_image.raw_data)
     return carla_image_data_array, 'bgra8'
 
 class DVSCamera(Camera):
@@ -168,17 +173,17 @@ class DVSCamera(Camera):
     self.dvs_camera_publisher.write(dvs_events_msg)
 
   def get_carla_image_data_array(self, carla_dvs_event_array):
-    self._dvs_events = numpy.frombuffer(carla_dvs_event_array.raw_data,
-                                        dtype=numpy.dtype([
-                                            ('x', numpy.uint16),
-                                            ('y', numpy.uint16),
-                                            ('t', numpy.int64),
-                                            ('pol', numpy.bool)
+    self._dvs_events = np.frombuffer(carla_dvs_event_array.raw_data,
+                                        dtype=np.dtype([
+                                            ('x', np.uint16),
+                                            ('y', np.uint16),
+                                            ('t', np.int64),
+                                            ('pol', np.bool)
                                         ]))
-    carla_image_data_array = numpy.zeros(
+    carla_image_data_array = np.zeros(
             (carla_dvs_event_array.height, carla_dvs_event_array.width, 3),
-            dtype=numpy.uint8)
-        # Blue is positive, red is negative
+            dtype=np.uint8)
+    # Blue is positive, red is negative
     carla_image_data_array[self._dvs_events[:]['y'], self._dvs_events[:]['x'],
                                self._dvs_events[:]['pol'] * 2] = 255
 

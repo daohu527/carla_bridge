@@ -14,7 +14,34 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import itertools
 import logging
+import time
+
+try:
+    import queue
+except ImportError:
+    import Queue as queue
+
+from enum import Enum
+from threading import Thread, Lock
+
+import carla
+
+from carla_bridge.actor_control import ActorControl
+from carla_bridge.ego_vehicle import EgoVehicle
+from carla_bridge.pseudo_actor import PseudoActor
+from carla_bridge.vehicle import Vehicle
+from carla_bridge.camera import (
+  RgbCamera, DepthCamera, SemanticSegmentationCamera, DVSCamera, Camera)
+from carla_bridge.actor import Actor
+from carla_bridge.gnss import Gnss
+from carla_bridge.imu import ImuSensor
+from carla_bridge.lidar import Lidar, SemanticLidar
+from carla_bridge.radar import Radar
+from carla_bridge.sensor import Sensor
+from carla_bridge.walker import Walker
+
 
 class ActorFactory(object):
   TIME_BETWEEN_UPDATES = 0.1
@@ -83,15 +110,14 @@ class ActorFactory(object):
           self._destroy_object(actor_id, delete_actor=True)
     self.lock.release()
 
-  def update_actor_states(self, frame_id, timestamp):
+  def update_actor_states(self, frame, timestamp):
     with self.lock:
       for actor_id in self.actors:
         try:
-          self.actors[actor_id].update(frame_id, timestamp)
+          self.actors[actor_id].update(frame, timestamp)
         except RuntimeError as e:
           logging.warn("Update actor {}({}) failed: {}".format(
                         self.actors[actor_id].__class__.__name__, actor_id, e))
-          continue
 
   def clear(self):
     for _, actor in self.actors.items():
@@ -222,9 +248,9 @@ class ActorFactory(object):
       actor = TFSensor(uid=uid, name=name, parent=parent, node=self.node)
     elif type_id == OdometrySensor.get_blueprint_name():
       actor = OdometrySensor(uid=uid,
-                              name=name,
-                              parent=parent,
-                              node=self.node)
+                             name=name,
+                             parent=parent,
+                             node=self.node)
     elif type_id == SpeedometerSensor.get_blueprint_name():
       actor = SpeedometerSensor(uid=uid,
                                 name=name,
@@ -232,88 +258,78 @@ class ActorFactory(object):
                                 node=self.node)
     elif type_id == MarkerSensor.get_blueprint_name():
       actor = MarkerSensor(uid=uid,
-                            name=name,
-                            parent=parent,
-                            node=self.node,
-                            actor_list=self.actors,
-                            world=self.world)
+                           name=name,
+                           parent=parent,
+                           node=self.node,
+                           actor_list=self.actors,
+                           world=self.world)
     elif type_id == ActorListSensor.get_blueprint_name():
       actor = ActorListSensor(uid=uid,
                               name=name,
                               parent=parent,
                               node=self.node,
                               actor_list=self.actors)
-
     elif type_id == ObjectSensor.get_blueprint_name():
-      actor = ObjectSensor(
-          uid=uid,
-          name=name,
-          parent=parent,
-          node=self.node,
-          actor_list=self.actors)
+      actor = ObjectSensor(uid=uid,
+                           name=name,
+                           parent=parent,
+                           node=self.node,
+                           actor_list=self.actors)
     elif type_id == TrafficLightsSensor.get_blueprint_name():
-      actor = TrafficLightsSensor(
-          uid=uid,
-          name=name,
-          parent=parent,
-          node=self.node,
-          actor_list=self.actors)
-
+      actor = TrafficLightsSensor(uid=uid,
+                                  name=name,
+                                  parent=parent,
+                                  node=self.node,
+                                  actor_list=self.actors)
     elif type_id == OpenDriveSensor.get_blueprint_name():
       actor = OpenDriveSensor(uid=uid,
                               name=name,
                               parent=parent,
                               node=self.node,
                               carla_map=self.world.get_map())
-
     elif type_id == ActorControl.get_blueprint_name():
       actor = ActorControl(uid=uid,
-                            name=name,
-                            parent=parent,
-                            node=self.node)
-
+                           name=name,
+                           parent=parent,
+                           node=self.node)
     elif carla_actor.type_id.startswith('traffic'):
       if carla_actor.type_id == "traffic.traffic_light":
         actor = TrafficLight(uid, name, parent, self.node, carla_actor)
       else:
         actor = Traffic(uid, name, parent, self.node, carla_actor)
     elif carla_actor.type_id.startswith("vehicle"):
-      if carla_actor.attributes.get('role_name')\
+      if carla_actor.attributes.get('role_name') \
               in self.node.parameters['ego_vehicle']['role_name']:
-        actor = EgoVehicle(
-              uid, name, parent, self.node, carla_actor,
-              self.node._ego_vehicle_control_applied_callback)
+        actor = EgoVehicle(uid, name, parent, self.node, carla_actor,
+                    self.node._ego_vehicle_control_applied_callback)
       else:
         actor = Vehicle(uid, name, parent, self.node, carla_actor)
     elif carla_actor.type_id.startswith("sensor"):
       if carla_actor.type_id.startswith("sensor.camera"):
           if carla_actor.type_id.startswith("sensor.camera.rgb"):
             actor = RgbCamera(uid, name, parent, spawn_pose, self.node,
-                                carla_actor, self.sync_mode)
+                              carla_actor, self.sync_mode)
           elif carla_actor.type_id.startswith("sensor.camera.depth"):
             actor = DepthCamera(uid, name, parent, spawn_pose,
-                                  self.node, carla_actor, self.sync_mode)
+                                self.node, carla_actor, self.sync_mode)
           elif carla_actor.type_id.startswith(
                   "sensor.camera.semantic_segmentation"):
             actor = SemanticSegmentationCamera(uid, name, parent,
-                                                  spawn_pose, self.node,
-                                                  carla_actor,
-                                                  self.sync_mode)
+                                               spawn_pose, self.node,
+                                               carla_actor, self.sync_mode)
           elif carla_actor.type_id.startswith("sensor.camera.dvs"):
             actor = DVSCamera(uid, name, parent, spawn_pose, self.node,
-                                carla_actor, self.sync_mode)
+                              carla_actor, self.sync_mode)
           else:
             actor = Camera(uid, name, parent, spawn_pose, self.node,
-                              carla_actor, self.sync_mode)
+                           carla_actor, self.sync_mode)
       elif carla_actor.type_id.startswith("sensor.lidar"):
         if carla_actor.type_id.endswith("sensor.lidar.ray_cast"):
           actor = Lidar(uid, name, parent, spawn_pose, self.node,
-                          carla_actor, self.sync_mode)
-        elif carla_actor.type_id.endswith(
-                "sensor.lidar.ray_cast_semantic"):
+                        carla_actor, self.sync_mode)
+        elif carla_actor.type_id.endswith("sensor.lidar.ray_cast_semantic"):
           actor = SemanticLidar(uid, name, parent, spawn_pose,
-                                  self.node, carla_actor,
-                                  self.sync_mode)
+                                self.node, carla_actor, self.sync_mode)
       elif carla_actor.type_id.startswith("sensor.other.radar"):
         actor = Radar(uid, name, parent, spawn_pose, self.node,
                         carla_actor, self.sync_mode)
@@ -322,20 +338,19 @@ class ActorFactory(object):
                         carla_actor, self.sync_mode)
       elif carla_actor.type_id.startswith("sensor.other.imu"):
         actor = ImuSensor(uid, name, parent, spawn_pose, self.node,
-                            carla_actor, self.sync_mode)
+                          carla_actor, self.sync_mode)
       elif carla_actor.type_id.startswith("sensor.other.collision"):
         actor = CollisionSensor(uid, name, parent, spawn_pose,
-                                  self.node, carla_actor, self.sync_mode)
+                                self.node, carla_actor, self.sync_mode)
       elif carla_actor.type_id.startswith("sensor.other.rss"):
         actor = RssSensor(uid, name, parent, spawn_pose, self.node,
-                            carla_actor, self.sync_mode)
+                          carla_actor, self.sync_mode)
       elif carla_actor.type_id.startswith("sensor.other.lane_invasion"):
         actor = LaneInvasionSensor(uid, name, parent, spawn_pose,
-                                      self.node, carla_actor,
-                                      self.sync_mode)
+                                   self.node, carla_actor, self.sync_mode)
       else:
         actor = Sensor(uid, name, parent, spawn_pose, self.node,
-                          carla_actor, self.sync_mode)
+                       carla_actor, self.sync_mode)
     elif carla_actor.type_id.startswith("spectator"):
       actor = Spectator(uid, name, parent, self.node, carla_actor)
     elif carla_actor.type_id.startswith("walker"):

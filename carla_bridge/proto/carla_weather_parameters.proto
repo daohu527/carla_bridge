@@ -1,0 +1,14 @@
+
+package carla.msg
+
+message CarlaWeatherParameters {
+  optional float32 cloudiness = 1;
+  optional float32 precipitation = 2;
+  optional float32 precipitation_deposits = 3;
+  optional float32 wind_intensity = 4;
+  optional float32 fog_density = 5;
+  optional float32 fog_distance = 6;
+  optional float32 wetness = 7;
+  optional float32 sun_azimuth_angle = 8;
+  optional float32 sun_altitude_angle = 9;
+}

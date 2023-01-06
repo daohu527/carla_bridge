@@ -1,0 +1,11 @@
+package carla.msg
+
+message CarlaControl {
+  enum {
+    PLAY;
+    PAUSE;
+    STEP_ONCE;
+  }
+
+  optional int8 command = 1;
+}

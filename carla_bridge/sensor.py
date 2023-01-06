@@ -127,7 +127,7 @@ class Sensor(Actor):
           if carla_sensor_data.frame == frame:
             self.publish_tf(trans.carla_transform_to_ros_pose(
                             carla_sensor_data.transform), timestamp)
-                            self.sensor_data_updated(carla_sensor_data)
+            self.sensor_data_updated(carla_sensor_data)
             return
           elif carla_sensor_data.frame < frame:
             pass

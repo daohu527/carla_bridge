@@ -15,6 +15,16 @@
 # limitations under the License.
 
 import math
+import logging
+import numpy as np
+from carla import Vector3D
+
+from modules.localization.proto.pose_pb2 import Pose
+
+import carla_bridge.common.transforms as trans
+
+from carla_bridge.pseudo_actor import PseudoActor
+from carla_bridge.sensor import Sensor
 
 class ActorControl(PseudoActor):
   def __init__(self, uid, name, parent, node):
@@ -39,12 +49,12 @@ class ActorControl(PseudoActor):
     super(ActorControl, self).destroy()
 
   @staticmethod
-  def get_blueprint_name(self):
+  def get_blueprint_name():
     return "actor.pseudo.control"
 
   def on_pose(self, pose):
     if self.parent and self.parent.carla_actor.is_alive:
-      self.parent.carla_actor.set_transform(trans.ros_pose_to_carla_transform(pose))
+      self.parent.carla_actor.set_transform(trans.pose_to_carla_transform(pose))
       if isinstance(self.parent, Sensor):
         self.parent.relative_spawn_pose = pose
 
@@ -55,7 +65,7 @@ class ActorControl(PseudoActor):
 
       rotation_matrix = trans.carla_rotation_to_numpy_rotation_matrix(
           self.parent.carla_actor.get_transform().rotation)
-      linear_vector = numpy.array([twist.linear.x, twist.linear.y, twist.linear.z])
+      linear_vector = np.array([twist.linear.x, twist.linear.y, twist.linear.z])
       rotated_linear_vector = rotation_matrix.dot(linear_vector)
       linear_velocity = Vector3D()
       linear_velocity.x = rotated_linear_vector[0]
