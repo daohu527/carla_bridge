@@ -23,7 +23,9 @@ setuptools.setup(
     package_dir={"": "."},
     packages=setuptools.find_packages(where="."),
     install_requires=[
-        'protobuf>=3.17.0',
+        # Preserve Python 3.6 support while excluding CVE-2022-1941 releases.
+        'protobuf>=3.19.6,!=3.20.0,!=3.20.1,'
+        '!=4.21.0,!=4.21.1,!=4.21.2,!=4.21.3,!=4.21.4,!=4.21.5',
     ],
     entry_points={
         'console_scripts': [
